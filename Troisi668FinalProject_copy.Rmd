@@ -1,0 +1,232 @@
+\`--- title: "R Notebook" output: html_notebook ---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code.
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*.
+
+Citations: "Leo Lahti, Sudarshan Shetty et al. (2017). Tools for microbiome analysis in R. Version . URL: <http://microbiome.github.com/microbiome>.
+
+<https://stackoverflow.com/questions/6778908/transpose-a-data-frame>
+
+<https://r4ds.hadley.nz/data-import.html>
+
+https://www.rdocumentation.org/packages/vegan/versions/2.6-10/topics/metaMDS
+
+https://forum.qiime2.org/t/before-i-get-into-clr-transformation-is-there-any-step-to-change-my-otu-table/25777
+
+https://www.rpubs.com/RGrieger/545184
+
+https://www.frontiersin.org/journals/microbiology/articles/10.3389/fmicb.2017.02224/full
+
+https://microbiome.github.io/course_2021_radboud/beta-diversity.html
+
+```{r, getting started}
+##imported readr, dyplr, tidyverse, vegan, compositions & picante in console
+
+#read data
+abundance_data <- read_tsv("clean_ITStable.tsv")
+metadata <- read_tsv("its_metadata.tsv")
+
+#tidy - transpose (flip rows and columns) so that the raw data has samples as rows same as the metadata (remove taxonomic data so its easier to transpose)
+#abundance_data <- select(abundance_data, -`9.T4`)
+#abundance_data <- abundance_data[-3, ]
+
+taxonomy <- abundance_data[, 1:7]
+abundance_only <- abundance_data[, -c(1:7)]
+
+transposed_data <- as.data.frame(t(abundance_only))
+transposed_data$sampleid <- row.names(transposed_data)
+
+#reincorporate the taxonomic labels as a combined label for each fungi "type"
+taxonomy_labels <- apply(taxonomy, 1, paste, collapse = "|")
+colnames(transposed_data) [1:nrow(taxonomy)] <- taxonomy_labels
+
+#combine metadata and abundances
+merged <- merge(metadata, transposed_data, by = "sampleid")
+
+taxon_to_remove <- "Fungi|NA|NA|NA|NA|NA| 11"
+merged <- merged[, !(colnames(merged) == taxon_to_remove)]
+
+#remove barcodes because I don't really need them
+merged$barcodes <- NULL 
+
+#check things look as expected
+head(merged)
+View(merged)
+
+
+```
+
+
+```{r, Relative abundances stacked plot}
+
+#Change any NA's to 0
+merged_fin <- merged
+merged_fin[is.na(merged_fin)] <- 0
+
+# Convert to long format and remove the columns with taxonomy data
+long_data <- pivot_longer(
+  merged_fin,
+  cols = -(1:5),  
+  names_to = "Taxon",
+  values_to = "Abundance"
+)
+
+#remove column 3 with empty taxonomy data
+long_data$Taxon <- sapply(strsplit(long_data$Taxon, "\\|"), function(x) x[3])
+
+# plot: stacked plot relative abundance
+ggplot(long_data, aes(x = Day, y = Abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", position = "fill") +
+  facet_grid(RH ~ Materials) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  labs(y = "Relative Abundance", x = "Time Point", fill = "Class" )
+
+#save as png
+ggsave("Relative_abundances_class_stacked.png", width = 30, height = 30)
+
+
+# plot: stacked plot absolute abundance
+ggplot(long_data, aes(x = Day, y = Abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(RH ~ Materials) +
+  scale_fill_brewer(palette = "Set3") +
+  theme_minimal() +
+  labs(y = "Absolute Abundance", x = "Time Point", fill = "Class" )
+
+ggsave("Absolute_abundances_class_stacked.png", width = 30, height = 30)
+
+
+##notes: data filtering??
+
+```
+```{r, clr transform}
+#total sum scaling to get relative abundance 
+comm_matrix <- merged[, -(1:5)]
+comm_matrix[is.na(comm_matrix)] <- 0
+comm_matrix <- data.frame(lapply(comm_matrix, as.numeric))
+rel_abun <- comm_matrix/rowSums(comm_matrix)
+
+#add pseudocount to handle 0's in order to do the clr transform 
+rel_abun[rel_abun ==0] <- 0.00001
+
+#clr transform
+clr_data <-clr(rel_abun)
+
+View(clr_data)
+```
+
+```{r, PCA}
+
+
+```
+
+
+```{r, nmds clr data}
+nmds1 <- metaMDS(clr_data, distance = "euclidean", k = 3)
+
+
+nmds1.fig <- ordiplot(nmds1, type ="none" )
+points(nmds.fig, "sites", pch = 19, col = "cadetblue2", select= merged$RH == "WET")
+points(nmds.fig, "sites", pch = 19, col = "darkseagreen2", select= merged$RH == "CYC")
+
+print(nmds1$stress)
+
+```
+
+
+
+```{r, nmds wet vs cycle}
+png("NMDS_wetandcycle.png", width = 800, height =  400)
+par(mfrow = c(1, 2)) 
+
+
+
+wet_data <- merged[merged$RH == "WET", ]
+cycle_data <- merged[merged$RH == "CYC", ]
+
+wet_comm <- wet_data[, -(1:5)]
+cycle_comm <- cycle_data[, -(1:5)]
+
+
+wet_comm[is.na(wet_comm)] <- 0
+cycle_comm[is.na(cycle_comm)] <- 0
+
+wet_comm <- data.frame(lapply(wet_comm, as.numeric))
+cycle_comm <- data.frame(lapply(cycle_comm, as.numeric))
+
+wet_ra <- wet_comm/rowSums(wet_comm)
+cycle_ra <- cycle_comm/rowSums(cycle_comm)
+#wet_ra[is.na(wet_ra)] <- 0
+#View(wet_ra)
+
+wet_nmds <- metaMDS(wet_ra, distance = "bray", k = 2, trymax = 100, autotransform =FALSE)
+cycle_nmds <- metaMDS(cycle_ra, distance = "bray", k = 2, trymax = 100, autotransform =FALSE)
+
+nmds_wet.fig <- ordiplot(wet_nmds, type ="none" )
+points(nmds_wet.fig, "sites", pch = 19, col = "cadetblue2", select= wet_data$Materials == "FB")
+points(nmds_wet.fig, "sites", pch = 19, col = "darkseagreen2", select= wet_data$Materials == "GW")
+points(nmds_wet.fig, "sites", pch = 19, col = "lightgoldenrod", select= wet_data$Materials == "OSB")
+title("MDS WET")
+legend("topright", legend = c("FB", "GW", "OSB"),
+       col = c("cadetblue2", "darkseagreen2", "lightgoldenrod"), pch = 19, cex = 1)
+
+nmds_cycle.fig <- ordiplot(cycle_nmds, type ="none" )
+points(nmds_cycle.fig, "sites", pch = 19, col = "cadetblue2", select= cycle_data$Materials == "FB")
+points(nmds_cycle.fig, "sites", pch = 19, col = "darkseagreen2", select= cycle_data$Materials == "GW")
+points(nmds_cycle.fig, "sites", pch = 19, col = "lightgoldenrod", select= cycle_data$Materials == "OSB")
+title("MDS CYCLE")
+legend("topright", legend = c("FB", "GW", "OSB"),
+       col = c("cadetblue2", "darkseagreen2", "lightgoldenrod"), pch = 19, cex = 1)
+
+dev.off()
+
+
+```
+
+
+```{r, stacked }
+
+merged_fin <- merged
+merged_fin[is.na(merged_fin)] <- 0
+# Convert to long format
+long_data <- pivot_longer(
+  merged_fin,
+  cols = -(1:5),  # replace with number of metadata columns
+  names_to = "Taxon",
+  values_to = "Abundance"
+)
+
+# Example plot: abundance by time point
+ggplot(long_data, aes(x = Day, y = Abundance, fill = Taxon)) +
+  geom_bar(stat = "identity", position = "fill") +
+  facet_grid(RH ~ Materials) +
+  theme_minimal() +
+  labs(y = "Relative Abundance", x = "Time Point")
+
+ggsave("abundances_ithink.png", width = 30, height = 30)
+
+library(RColorBrewer)
+display.brewer.all(type = "qual")
+
+
+```
+
+In the future filter data better?
+More robust decision making process for pseudo count value or better yet RCLR
+
+questions to address:
+-why clr transform?
+-did the pseudocount after relative abundance so not to alter compositional relationship by altering total sums
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+\`
